@@ -1,10 +1,10 @@
 # EngagedMD hero for Webflow: tablet, Doc and Flo in one embed
 
-Revision 2 (Nov 18, 2026): brand colors corrected, rendering pauses offscreen, static poster added.
+Revision 3 (Nov 20, 2026): designer's page-optimized build (new key light and shadow, skin shading, Flo blinks, 4x MSAA, gentler head-follow), with the r2 fixes re-applied: brand colors, rendering pauses offscreen, static poster.
 
 Files
 - `emd-hero.js`: the viewer, with the tablet artwork and screen animation built in (three.js r187).
-- `emd-hero-poster.webp`: the finished frame (1200 x 1156, transparent, 50 KB). Shown instantly, and on its own for low-end devices.
+- `emd-hero-poster.webp`: the finished frame (1200 x 1156, transparent, 55 KB). Shown instantly, and on its own for low-end devices.
 - `doc-web.glb`: Doc (0.58 MB).
 - `flo-web.glb`: Flo (0.78 MB).
 - `tablet-source.js`, `duo-source.js`: sources, updated with the same fixes. The small embed bootstrap (the `data-emd-hero` loader) lives only in the bundle; port the poster logic into its source before the next rebuild.

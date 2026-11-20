@@ -46,7 +46,7 @@ function buildCard(root, k, assets) {
     rr(inner, 172, y0 + 54, 223, 128, 4, 'none', { stroke: C.white, 'stroke-width': 2.5 });
     parts.play = el('g', {}, inner); el('circle', { cx: 284, cy: y0 + 117, r: 32, fill: C.white }, parts.play);
     parts.tri = el('path', { d: `M276 ${y0 + 101} L276 ${y0 + 133} L302 ${y0 + 117} Z`, fill: C.teal, 'stroke-linejoin': 'round' }, parts.play);
-    bar(inner, 243, 371, y0 + 210, 4, C.scrub); parts.scrub = bar(inner, 168, 243, y0 + 210, 4, C.white);
+    bar(inner, 168, 371, y0 + 210, 4, C.scrub); parts.scrub = bar(inner, 168, 243, y0 + 210, 4, C.white);
     parts.knob = el('circle', { cx: 243, cy: y0 + 210, r: 7, fill: C.white }, inner);
     rr(inner, 381, y0 + 201, 5, 18, 1.5, C.white); rr(inner, 391, y0 + 201, 5, 18, 1.5, C.white);
   } else if (spec.kind === 'sign') {
@@ -131,7 +131,8 @@ function poseEnhanced(p, t, life, nudge = 0) {
   if (p.play) { // play pulses; the scrub knob travels
     const pulse = 1 + 0.06 * Math.max(0, Math.sin(life * 2.4)) * clamp((t - 24) / 6);
     p.play.setAttribute('transform', scaleAbout(284, y0 + 117, Math.max(0.001, spring((t - 6) / 12)) * pulse)); p.tri.setAttribute('opacity', clamp((t - 10) / 3));
-    const u = clamp((t - 14) / 10) * ((life * 0.12) % 1), kx = 168 + (371 - 168) * (0.37 + 0.63 * u);
+    // play head runs the full bar from the far left, then restarts; parked at the left until the card has built
+    const secs = Math.max(0, t - 14) / (FPS * ENH.speed), u = (secs / 10) % 1, kx = 168 + (371 - 168) * u; // 10 s per pass
     p.knob.setAttribute('cx', kx); p.scrub.setAttribute('x2', kx);
   }
   if (p.sigClip) p.sigClip.setAttribute('width', 220 * easeOut((t - 9) / 16)); // signature writes itself

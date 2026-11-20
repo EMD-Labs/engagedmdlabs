@@ -54,11 +54,20 @@ export const DOC_LOOK = {
   'Eye.Glassy.Textured.WebPBR': { color: '#0c0c0d', roughness: 0.3, clearcoat: 0.7, clearcoatRoughness: 0.12, specularIntensity: 0.8, eye: true },
 };
 
+// skin "dimension": a colour shift across the face from upper right (lighter, warmer-gold) to lower left (deeper, redder),
+// plus a small forehead lift. default 1.7 (option E, chosen 20 Nov); 0 = off; shared by every skin material.
+const SKIN_DIM = { value: 0 };
 function addSkinScatter(m, amount) {
   m.userData.sss = { value: amount };
   m.onBeforeCompile = (sh) => {
-    sh.uniforms.uSSS = m.userData.sss;
-    sh.fragmentShader = 'uniform float uSSS;\n' + sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+    sh.uniforms.uSSS = m.userData.sss; sh.uniforms.uDim = SKIN_DIM;
+    sh.fragmentShader = 'uniform float uSSS;\nuniform float uDim;\n' + sh.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+  {
+    float g = dot(normal, normalize(vec3(0.55, 0.7, 0.45)));
+    float lift = smoothstep(-0.1, 0.95, g), shade = smoothstep(0.25, -0.85, g), top = smoothstep(0.35, 0.95, normal.y);
+    vec3 k = mix(vec3(1.0), vec3(1.12, 1.08, 1.0), lift * uDim) * mix(vec3(1.0), vec3(0.84, 0.72, 0.68), shade * uDim) * (1.0 + 0.08 * top * uDim);
+    reflectedLight.directDiffuse *= k; reflectedLight.indirectDiffuse *= k;
+  }
 #if NUM_DIR_LIGHTS > 0
   for (int i = 0; i < NUM_DIR_LIGHTS; i++) {
     float ndl = dot(normal, directionalLights[i].direction);
@@ -158,15 +167,26 @@ function setupFlo(gltf, ctx) {
         if (best) { const L = best[1].clone().invert().multiply(Wb); best[0].add(watch); L.decompose(watch.position, watch.quaternion, watch.scale); } } } }
   const RAISE = 1.05, LOWER = 1.0; const waveDur = actions.wave?.getClip().duration || 0, restDur = actions.rest?.getClip().duration || 1;
   const st = { phase: 'rest', seqT: 0, idleT: 0, waveCount: 0 };
+  const eyes = ['Flo.Eye.L', 'Flo.Eye.R'].map((n) => byName(model, n)).filter(Boolean);
+  const eyeBaseY = eyes.map((e) => e.scale.y); // node scale carries the mesh dequantization (~0.01): blink relative to it
+  const blink = { t: -1, next: 1.5 + Math.random() * 3, double: false, queued: -1 };
+  const BLINK = 0.16; // seconds, close + open
+  const stepBlink = (dt) => {
+    if (blink.queued >= 0) { blink.queued -= dt; if (blink.queued < 0 && blink.t < 0) blink.t = 0; }
+    if (blink.t >= 0) { blink.t += dt; if (blink.t > BLINK) { blink.t = -1; if (blink.double) { blink.double = false; blink.queued = 0.09; } } }
+    else if ((blink.next -= dt) <= 0) { blink.t = 0; blink.double = Math.random() < 0.2; blink.next = 2 + Math.random() * 4; }
+  };
+  const applyBlink = () => { const u = blink.t >= 0 ? Math.sin(Math.PI * Math.min(1, blink.t / BLINK)) : 0; eyes.forEach((e, i) => { e.scale.y = eyeBaseY[i] * (1 - 0.9 * u); }); };
   const apply = () => { const w = st.phase === 'rest' ? 0 : ease(st.seqT / RAISE) * (1 - ease((st.seqT - (waveDur - LOWER)) / LOWER));
     if (actions.wave) { actions.wave.time = Math.min(st.seqT, waveDur - 1e-4); actions.wave.setEffectiveWeight(w); }
     if (actions.rest) { actions.rest.time = st.idleT % restDur; actions.rest.setEffectiveWeight(1 - w); }
-    mixer.update(0); updateHose(); };
+    mixer.update(0); updateHose(); applyBlink(); };
   return {
     name: 'flo', model, headBone, headMesh, materials: mats, hose, pencil, cycle: waveDur,
-    step(dt) { st.idleT += dt; if (st.phase === 'wave') { st.seqT += dt; if (st.seqT >= waveDur) { st.phase = 'rest'; st.seqT = 0; } } },
+    step(dt) { st.idleT += dt; stepBlink(dt); if (st.phase === 'wave') { st.seqT += dt; if (st.seqT >= waveDur) { st.phase = 'rest'; st.seqT = 0; } } },
     apply, busy: () => st.phase === 'wave',
-    greet() { if (st.phase === 'wave') return false; st.phase = 'wave'; st.seqT = 0; st.waveCount++; return true; },
+    greet() { if (st.phase === 'wave') return false; st.phase = 'wave'; st.seqT = 0; st.waveCount++; blink.queued = 0.25; blink.next = 3 + Math.random() * 3; return true; },
+    blinkNow() { blink.t = 0; },
     seek(t) { st.phase = t > 0 && t < waveDur ? 'wave' : 'rest'; st.seqT = Math.max(0, Math.min(waveDur, t)); },
     state() { return { phase: st.phase === 'wave' ? (st.seqT < RAISE ? 'raise' : st.seqT > waveDur - LOWER ? 'return' : 'wave') : 'rest', time: st.phase === 'wave' ? st.seqT : 0, duration: waveDur, waveCount: st.waveCount }; },
   };
@@ -202,6 +222,7 @@ function setupDoc(gltf, ctx) {
 
 // ---------- stage ----------
 export async function createDuo(opts) {
+  SKIN_DIM.value = opts?.skinDim ?? 1.7;
   const { container } = opts; const layout = { ...DEFAULT_LAYOUT, ...(opts.layout || {}) };
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: !!opts.preserveDrawingBuffer });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, opts.maxPixelRatio ?? 2));
@@ -223,11 +244,11 @@ export async function createDuo(opts) {
 
   // light rig: key from front-left (short soft shadows falling right/back, as in the layout comp)
   const hemi = new THREE.HemisphereLight(0xffffff, 0xd9cfc4, 0.9); scene.add(hemi);
-  const key = new THREE.DirectionalLight(0xfff6ec, 2.5); key.position.set(-1.6, 5.2, 2.2); key.castShadow = true;
+  const key = new THREE.DirectionalLight(0xfff6ec, 2.5); key.position.set(1.5, 4.4, 1.76); key.castShadow = true; // front-right and high: short shadows falling back-left
   key.shadow.mapSize.set(2048, 2048); key.shadow.radius = 30; key.shadow.blurSamples = 24; key.shadow.bias = -0.0004; key.shadow.normalBias = 0.01;
-  Object.assign(key.shadow.camera, { left: -1.8, right: 1.8, top: 2.2, bottom: -1.2, near: 0.5, far: 10 }); scene.add(key, key.target);
-  const fill = new THREE.DirectionalLight(0xeef3ff, 0.9); fill.position.set(3, 1.4, 3); scene.add(fill);
-  const rim = new THREE.DirectionalLight(0xffffff, 0.6); rim.position.set(1.5, 2.5, -3); scene.add(rim);
+  Object.assign(key.shadow.camera, { left: -2.6, right: 2.6, top: 2.6, bottom: -2.2, near: 0.5, far: 12 }); scene.add(key, key.target);
+  const fill = new THREE.DirectionalLight(0xeef3ff, 0.9); fill.position.set(-3, 1.4, 3); scene.add(fill);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.6); rim.position.set(-1.5, 2.5, -3); scene.add(rim);
 
   const ctx = { eyeMap: eyeEnv(renderer) };
   const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
@@ -243,11 +264,16 @@ export async function createDuo(opts) {
 
   // shadow floor, faded with distance from the pair
   const mid = new THREE.Vector3(); chars.forEach((c) => mid.add(c.holder.position)); mid.divideScalar(chars.length || 1);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), new THREE.ShadowMaterial({ opacity: opts.shadowOpacity ?? 0.3, color: 0x2a2018 }));
-  ground.material.onBeforeCompile = (sh) => { sh.uniforms.uC = { value: new THREE.Vector2(mid.x, mid.z) };
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), new THREE.ShadowMaterial({ opacity: opts.shadowOpacity ?? 0.21, color: 0x2a2018 }));
+  const tabRect = new THREE.Vector4(0, 0, -1, -1), drawSize = new THREE.Vector2(1, 1);
+  if (opts.tablet) { const [tx, ty, tw, th] = layout.tablet; tabRect.set(tx, 1 - (ty + th), tx + tw, 1 - ty); } // canvas-normalised, GL y-up
+  ground.material.onBeforeCompile = (sh) => { sh.uniforms.uC = { value: new THREE.Vector2(mid.x - 0.05, mid.z) }; sh.uniforms.uTab = { value: tabRect }; sh.uniforms.uRes = { value: drawSize };
     sh.vertexShader = 'varying vec3 vWP;\n' + sh.vertexShader.replace('#include <project_vertex>', '#include <project_vertex>\n vWP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
-    sh.fragmentShader = 'varying vec3 vWP; uniform vec2 uC;\n' + sh.fragmentShader.replace(/gl_FragColor = vec4\( color, opacity \* \( 1\.0 - getShadowMask\(\) \) \);/,
-      'float d = length((vWP.xz - uC) * vec2(0.8, 1.2)); gl_FragColor = vec4( color, opacity * ( 1.0 - getShadowMask() ) * (1.0 - smoothstep(0.35, 1.3, d)) );'); };
+    sh.fragmentShader = 'varying vec3 vWP; uniform vec2 uC; uniform vec4 uTab; uniform vec2 uRes;\n' + sh.fragmentShader.replace(/gl_FragColor = vec4\( color, opacity \* \( 1\.0 - getShadowMask\(\) \) \);/,
+      `float d = length((vWP.xz - uC) * vec2(0.85, 1.1));
+       vec2 sp = gl_FragCoord.xy / uRes; vec2 q = abs(sp - 0.5 * (uTab.xy + uTab.zw)) - 0.5 * (uTab.zw - uTab.xy) + 0.03;
+       float behindTablet = 1.0 - smoothstep(-0.004, 0.004, length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.03);
+       gl_FragColor = vec4( color, opacity * ( 1.0 - getShadowMask() ) * (1.0 - smoothstep(0.1, 0.65, d)) * (1.0 - behindTablet) );`); };
   ground.rotation.x = -Math.PI / 2; ground.position.y = 0.001; ground.receiveShadow = true; scene.add(ground);
   key.target.position.set(mid.x, 0.8, mid.z); key.position.add(key.target.position);
 
@@ -271,19 +297,29 @@ export async function createDuo(opts) {
   let controls = null;
   if (opts.controls) { controls = new OrbitControls(camera, renderer.domElement); controls.target.copy(target); controls.enableDamping = true; controls.enablePan = false; controls.update(); }
 
-  const composer = new EffectComposer(renderer); composer.addPass(new RenderPass(scene, camera));
+  // The canvas 'antialias' flag doesn't apply once post-processing renders into its own targets,
+  // so the scene goes into a 4x multisampled HalfFloat target (resolved before the AO and output passes).
+  const msaaTarget = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: opts.msaa ?? 4 });
+  const composer = new EffectComposer(renderer, msaaTarget); composer.addPass(new RenderPass(scene, camera));
   const ao = new GTAOPass(scene, camera, 1, 1);
   ao.updateGtaoMaterial({ radius: 0.12, distanceExponent: 1.4, thickness: 1, scale: 1, samples: 16 });
   ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 }); ao.blendIntensity = 0.85;
   composer.addPass(ao); composer.addPass(new OutputPass());
-  const resize = () => { const w = container.clientWidth, h = container.clientHeight; renderer.setSize(w, h, false); composer.setSize(w, h); }; // aspect stays locked to the layout comp; size the container to 600:578
+  const resize = () => { const w = container.clientWidth, h = container.clientHeight; renderer.setSize(w, h, false); composer.setSize(w, h); renderer.getDrawingBufferSize(drawSize); }; // aspect stays locked to the layout comp; size the container to 600:578
   new ResizeObserver(resize).observe(container); resize();
 
   // pointer: head follow + hover/click greeting per character
+  const HEAD = { yaw: 0.32, up: 0.12, down: 0.14 }; // radians: about 18° side to side, 7° up, 8° down
+  const smoothstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
   const pointer = new THREE.Vector2(), ray = new THREE.Raycaster(); let follow = opts.follow ?? true, hoverGreet = opts.hoverGreet ?? true, hoverAt = 0, downAt = null;
   const hit = (e) => { const r = renderer.domElement.getBoundingClientRect(); ray.setFromCamera({ x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -(((e.clientY - r.top) / r.height) * 2 - 1) }, camera);
     let best = null, bd = 1e9; for (const c of chars) { const p = ray.ray.intersectBox(c.box, new THREE.Vector3()); if (p) { const d = p.distanceTo(ray.ray.origin); if (d < bd) { bd = d; best = c; } } } return best; };
-  window.addEventListener('pointermove', (e) => { const r = renderer.domElement.getBoundingClientRect(); pointer.set(((e.clientX - r.left) / r.width) * 2 - 1, -(((e.clientY - r.top) / r.height) * 2 - 1));
+  // head follow keeps the pointer's page position and re-measures it every frame, so scrolling can't leave a stale, extreme angle
+  const cursor = { x: 0, y: 0, active: false };
+  const toNDC = () => { const r = renderer.domElement.getBoundingClientRect(); pointer.set(((cursor.x - r.left) / r.width) * 2 - 1, -(((cursor.y - r.top) / r.height) * 2 - 1)); return r; };
+  document.documentElement.addEventListener('pointerleave', () => { cursor.active = false; });
+  window.addEventListener('blur', () => { cursor.active = false; });
+  window.addEventListener('pointermove', (e) => { cursor.x = e.clientX; cursor.y = e.clientY; cursor.active = true; toNDC();
     if (!hoverGreet || e.buttons || performance.now() - hoverAt < 150) return; hoverAt = performance.now(); const c = hit(e); if (c && !c.busy()) api.greet(c.name, 'hover'); });
   renderer.domElement.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
   renderer.domElement.addEventListener('pointerup', (e) => { if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) >= 5) return;
@@ -320,7 +356,7 @@ export async function createDuo(opts) {
     replayIntro() { if (paused) return; tablet?.play(); introRound = true; roundT = INTRO; },
     setPaused(p) { paused = p; p ? tablet?.pause() : tablet?.resume(); emit(); }, setSpeed(s) { speed = s; },
     setAutoGreet(on) { autoGreet = on; if (on) roundT = Math.min(roundT, 1.5); emit(); }, setHoverGreet(on) { hoverGreet = on; },
-    setFollow(f) { follow = f; }, setAO(on) { ao.enabled = on; }, setSmile(v) { smileBoost = v; },
+    setFollow(f) { follow = f; }, setSkinDim(v) { SKIN_DIM.value = v; }, setAO(on) { ao.enabled = on; }, setSmile(v) { smileBoost = v; },
     setHose(on) { chars.forEach((c) => { if (c.hose) c.hose.on = on; }); }, setHoseCurve(k) { chars.forEach((c) => { if (c.hose) c.hose.k = k; }); },
     onChange(f) { listeners.add(f); },
     state() { return { paused, autoGreet, nextRound: Math.max(0, roundT), doc: ch.doc?.state(), flo: ch.flo?.state(), duration: INTRO + Math.max(ch.doc?.cycle || 0, (ch.flo?.cycle || 0) + STAGGER), intro: INTRO }; },
@@ -336,7 +372,13 @@ export async function createDuo(opts) {
     const applied = [];
     for (const c of chars) { if (!c.headBone) continue; const q = offs.get(c);
       const hp = c.headBone.getWorldPosition(new THREE.Vector3()).project(camera);
-      tmpE.set(follow ? -(pointer.y - hp.y) * 0.15 : 0, follow ? (pointer.x - hp.x) * 0.3 : 0, 0);
+      let pitch = 0, yaw = 0;
+      if (follow && cursor.active) { toNDC(); const dx = pointer.x - hp.x, dy = pointer.y - hp.y;
+        // fade out when the pointer is far from the stage (e.g. well below it on the page), soft-limit the angles
+        const far = Math.max(Math.abs(dx), Math.abs(dy)), w = 1 - smoothstep(1.6, 3.2, far);
+        yaw = HEAD.yaw * Math.tanh((dx * 0.3) / HEAD.yaw) * w;
+        pitch = -dy * 0.15; pitch = (pitch > 0 ? HEAD.down : HEAD.up) * Math.tanh(pitch / (pitch > 0 ? HEAD.down : HEAD.up)) * w; }
+      tmpE.set(pitch, yaw, 0);
       q.slerp(new THREE.Quaternion().setFromEuler(tmpE), 0.08); c.headBone.quaternion.multiply(q); applied.push(c); }
     let smilePrev = null; const fm = ch.flo?.headMesh, si = fm?.morphTargetDictionary?.Smile;
     if (fm && si !== undefined && smileBoost) { smilePrev = fm.morphTargetInfluences[si]; fm.morphTargetInfluences[si] = Math.min(1, smilePrev + smileBoost); }
